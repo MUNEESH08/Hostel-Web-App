@@ -1,0 +1,16 @@
+{% extends 'base.html' %}
+{% block content %}
+  <h2>Hello, {{ student.name }}</h2>
+  <p>Approved: {{ 'Yes' if student.approved else 'No' }}</p>
+  {% if room %}
+    <div class="card">
+      <h3>Your Room</h3>
+      <p>Room: {{ room.room_number }}</p>
+      <p>Type: {{ room.type }}</p>
+      <p>AC: {{ 'Yes' if room.ac else 'No' }}</p>
+      <p>Room Type: {{ room.room_type }}</p>
+    </div>
+  {% else %}
+    <p>You have no room assigned. <a href="/student/rooms">Request a room</a></p>
+  {% endif %}
+{% endblock %}
