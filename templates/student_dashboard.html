@@ -5,10 +5,11 @@
   {% if room %}
     <div class="card">
       <h3>Your Room</h3>
-      <p>Room: {{ room.room_number }}</p>
-      <p>Type: {{ room.type }}</p>
-      <p>AC: {{ 'Yes' if room.ac else 'No' }}</p>
+      <p>Room No: {{ room.room_no }}</p>
       <p>Room Type: {{ room.room_type }}</p>
+      <p>AC Type: {{ room.ac_type }}</p>
+      <p>Total Capacity: {{ room.vacancies }}</p>
+      <p>Current Occupants: {{ room.students|length }}</p>
     </div>
   {% else %}
     <p>You have no room assigned. <a href="/student/rooms">Request a room</a></p>
