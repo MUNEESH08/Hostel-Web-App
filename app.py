@@ -1,4 +1,4 @@
-from flask import Flask, render_template, request, redirect, url_for, session, flash, jsonify
+from flask import Flask, render_template, request, redirect, url_for, session, flash
 from flask_pymongo import PyMongo
 from bson.objectid import ObjectId
 from werkzeug.security import generate_password_hash, check_password_hash
@@ -7,26 +7,27 @@ from datetime import timedelta
 import os
 
 app = Flask(__name__)
-app.secret_key = os.environ.get('SECRET_KEY', os.urandom(24))
+app.secret_key = os.environ.get('SECRET_KEY', 'dev_secret_for_local_testing')
 app.config['MONGO_URI'] = os.environ.get(
     'MONGO_URI',
     'mongodb+srv://Muneesh:MI5y8ckbp7QUtTGs@cluster0.vpnqgja.mongodb.net/hosteldb?retryWrites=true&w=majority&appName=Cluster0'
 )
 app.permanent_session_lifetime = timedelta(minutes=30)
-
 COLLEGE_KEY = 'Rec#1234'
 
 mongo = PyMongo(app)
 
-# Collections
 students = mongo.db.students
 wardens = mongo.db.wardens
 rooms = mongo.db.rooms
 room_requests = mongo.db.room_requests
 
-# Utilities
 def get_vacancy(room_doc):
-    return room_doc['vacancies'] - len(room_doc.get('students', []))
+    """Return remaining vacancy count for a room document."""
+    if not room_doc:
+        return 0
+    return int(room_doc.get('vacancies', 0)) - len(room_doc.get('students', []))
+
 
 def login_required(role=None):
     def decorator(f):
@@ -50,16 +51,19 @@ def index():
 @app.route('/student/register', methods=['GET','POST'])
 def student_register():
     if request.method == 'POST':
-        name = request.form['name']
-        email = request.form['email']
-        password = generate_password_hash(request.form['password'])
+        name = request.form.get('name', '').strip()
+        email = request.form.get('email', '').strip().lower()
+        pwd = request.form.get('password', '')
+        if not (name and email and pwd):
+            flash('Please fill all fields')
+            return redirect(url_for('student_register'))
         if students.find_one({'email': email}):
-            flash('Email already registered')
+            flash('Student already registered')
             return redirect(url_for('student_register'))
         students.insert_one({
             'name': name,
             'email': email,
-            'password': password,
+            'password': generate_password_hash(pwd),
             'approved': False,
             'room_id': None
         })
@@ -67,11 +71,12 @@ def student_register():
         return redirect(url_for('index'))
     return render_template('student_register.html')
 
+
 @app.route('/student/login', methods=['GET','POST'])
 def student_login():
     if request.method == 'POST':
-        email = request.form['email']
-        pwd = request.form['password']
+        email = request.form.get('email', '').strip().lower()
+        pwd = request.form.get('password', '')
         s = students.find_one({'email': email})
         if not s or not check_password_hash(s['password'], pwd):
             flash('Invalid credentials')
@@ -86,42 +91,55 @@ def student_login():
         return redirect(url_for('student_dashboard'))
     return render_template('student_login.html')
 
+
 @app.route('/student/dashboard')
 @login_required('student')
 def student_dashboard():
     s = students.find_one({'_id': ObjectId(session['user'])})
     room = None
-    if s.get('room_id'):
-        room = rooms.find_one({'_id': ObjectId(s['room_id'])})
+    if s and s.get('room_id'):
+        try:
+            room = rooms.find_one({'_id': ObjectId(s['room_id'])})
+        except Exception:
+            room = None
     return render_template('student_dashboard.html', student=s, room=room)
+
 
 @app.route('/student/rooms', methods=['GET','POST'])
 @login_required('student')
 def student_rooms():
-    ac_filter = request.args.get('ac')
-    rtype_filter = request.args.get('room_type')
+    # Expect query params: ac = 'any'|'ac'|'non-ac', room_type = 'any' or specific
+    ac_filter = request.args.get('ac', 'any')
+    rtype_filter = request.args.get('room_type', 'any')
+
     all_rooms = []
     for r in rooms.find():
         vac = get_vacancy(r)
         if vac <= 0:
             continue
-        if ac_filter == 'on' and r['ac_type'].lower() != 'ac':
+        ac_type = r.get('ac_type', '').lower()
+        if ac_filter == 'ac' and ac_type != 'ac':
             continue
-        if rtype_filter and rtype_filter != 'any' and r['room_type'].lower() != rtype_filter.lower():
+        if ac_filter == 'non-ac' and ac_type == 'ac':
+            continue
+        if rtype_filter and rtype_filter != 'any' and r.get('room_type','').lower() != rtype_filter.lower():
             continue
         all_rooms.append({
             '_id': str(r['_id']),
-            'room_no': r['room_no'],
-            'room_type': r['room_type'],
-            'ac_type': r['ac_type'],
-            'vacancies': r['vacancies'],
+            'room_no': r.get('room_no'),
+            'room_type': r.get('room_type'),
+            'ac_type': r.get('ac_type'),
+            'vacancies': r.get('vacancies'),
             'current_students': len(r.get('students', [])),
             'available': vac
         })
+
     if request.method == 'POST':
-        room_id = request.form['room_id']
+        room_id = request.form.get('room_id')
         student_id = session['user']
-        if room_requests.find_one({'student_id': ObjectId(student_id), 'status': 'pending'}):
+        # Prevent multiple pending requests from same student
+        existing = room_requests.find_one({'student_id': ObjectId(student_id), 'status': 'pending'})
+        if existing:
             flash('You already have a pending room request.')
             return redirect(url_for('student_dashboard'))
         room_requests.insert_one({
@@ -131,11 +149,14 @@ def student_rooms():
         })
         flash('Room request submitted. Wait for warden approval.')
         return redirect(url_for('student_dashboard'))
-    return render_template('room_registration.html', rooms=all_rooms, ac_checked=(ac_filter=='on'), selected_type=(rtype_filter or 'any'))
 
-@app.route('/student/rooms/filter', methods=['GET'])
+    return render_template('room_registration.html', rooms=all_rooms, ac_checked=(ac_filter=='ac'), selected_type=(rtype_filter or 'any'))
+
+
+@app.route('/student/rooms/filter')
 @login_required('student')
 def student_rooms_filter():
+    # helper that returns JSON filtered rooms (can be used via AJAX)
     ac_filter = request.args.get('ac', 'any')
     rtype_filter = request.args.get('room_type', 'any')
     filtered_rooms = []
@@ -143,47 +164,48 @@ def student_rooms_filter():
         vac = get_vacancy(r)
         if vac <= 0:
             continue
-        if ac_filter == 'ac' and r['ac_type'].lower() != 'ac':
+        ac_type = r.get('ac_type','').lower()
+        if ac_filter == 'ac' and ac_type != 'ac':
             continue
-        if ac_filter == 'non-ac' and r['ac_type'].lower() == 'ac':
+        if ac_filter == 'non-ac' and ac_type == 'ac':
             continue
-        if rtype_filter != 'any' and r['room_type'].lower() != rtype_filter.lower():
+        if rtype_filter != 'any' and r.get('room_type','').lower() != rtype_filter.lower():
             continue
         filtered_rooms.append({
             '_id': str(r['_id']),
-            'room_no': r['room_no'],
-            'room_type': r['room_type'],
-            'ac_type': r['ac_type'],
-            'vacancies': r['vacancies'],
-            'current_students': len(r.get('students', [])),
-            'available': vac
+            'room_no': r.get('room_no'),
+            'room_type': r.get('room_type'),
+            'ac_type': r.get('ac_type'),
+            'vacancies': r.get('vacancies'),
+            'available': get_vacancy(r)
         })
-    return jsonify(filtered_rooms)
+    return {'rooms': filtered_rooms}
 
 # ---------------- Warden routes ----------------
 @app.route('/warden/register', methods=['GET','POST'])
 def warden_register():
     if request.method == 'POST':
-        name = request.form['name']
-        email = request.form['email']
-        password = generate_password_hash(request.form['password'])
-        college_key = request.form['college_key']
+        name = request.form.get('name','').strip()
+        email = request.form.get('email','').strip().lower()
+        pwd = request.form.get('password','')
+        college_key = request.form.get('college_key','')
         if college_key != COLLEGE_KEY:
             flash('Invalid college key')
             return redirect(url_for('warden_register'))
         if wardens.find_one({'email': email}):
             flash('Warden already exists')
             return redirect(url_for('warden_register'))
-        wardens.insert_one({'name': name, 'email': email, 'password': password})
-        flash('Warden registered. You can login now')
+        wardens.insert_one({'name': name, 'email': email, 'password': generate_password_hash(pwd)})
+        flash('Warden registered. Please login.')
         return redirect(url_for('index'))
-    return render_template('warden_register.html', college_key=COLLEGE_KEY)
+    return render_template('warden_register.html')
+
 
 @app.route('/warden/login', methods=['GET','POST'])
 def warden_login():
     if request.method == 'POST':
-        email = request.form['email']
-        pwd = request.form['password']
+        email = request.form.get('email','').strip().lower()
+        pwd = request.form.get('password','')
         w = wardens.find_one({'email': email})
         if not w or not check_password_hash(w['password'], pwd):
             flash('Invalid credentials')
@@ -195,6 +217,7 @@ def warden_login():
         return redirect(url_for('warden_dashboard'))
     return render_template('warden_login.html')
 
+
 @app.route('/warden/dashboard')
 @login_required('warden')
 def warden_dashboard():
@@ -202,11 +225,24 @@ def warden_dashboard():
     pending_room_requests = list(room_requests.find({'status': 'pending'}))
     enriched = []
     for req in pending_room_requests:
-        stud = students.find_one({'_id': req['student_id']})
-        room = rooms.find_one({'_id': req['room_id']})
-        enriched.append({'req_id': str(req['_id']), 'student': stud, 'room': room})
-    room_list = list(rooms.find())
+        student = students.find_one({'_id': req['student_id']}) if isinstance(req.get('student_id'), ObjectId) else students.find_one({'_id': ObjectId(req['student_id'])})
+        room = rooms.find_one({'_id': req['room_id']}) if isinstance(req.get('room_id'), ObjectId) else rooms.find_one({'_id': ObjectId(req['room_id'])})
+        enriched.append({'req': req, 'student': student, 'room': room})
+
+    room_list = []
+    for r in rooms.find():
+        room_list.append({
+            '_id': str(r['_id']),
+            'room_no': r.get('room_no'),
+            'room_type': r.get('room_type'),
+            'ac_type': r.get('ac_type'),
+            'vacancies': r.get('vacancies'),
+            'current_students': len(r.get('students', [])),
+            'available': get_vacancy(r)
+        })
+
     return render_template('warden_dashboard.html', pending_students=pending_students, requests=enriched, rooms=room_list)
+
 
 @app.route('/warden/approve_student/<sid>')
 @login_required('warden')
@@ -215,6 +251,7 @@ def approve_student(sid):
     flash('Student approved')
     return redirect(url_for('warden_dashboard'))
 
+
 @app.route('/warden/approve_request/<rid>')
 @login_required('warden')
 def approve_request(rid):
@@ -222,16 +259,22 @@ def approve_request(rid):
     if not req:
         flash('Request not found')
         return redirect(url_for('warden_dashboard'))
-    room = rooms.find_one({'_id': req['room_id']})
+    # Ensure we fetch the latest room doc and vacancy
+    room = rooms.find_one({'_id': req['room_id']}) if isinstance(req.get('room_id'), ObjectId) else rooms.find_one({'_id': ObjectId(req['room_id'])})
+    if not room:
+        flash('Room not found')
+        return redirect(url_for('warden_dashboard'))
     if get_vacancy(room) <= 0:
         room_requests.update_one({'_id': req['_id']}, {'$set': {'status': 'rejected', 'reason': 'No vacancy'}})
         flash('No vacancy, request rejected')
         return redirect(url_for('warden_dashboard'))
+    # Push student into room and set student's room_id
     rooms.update_one({'_id': room['_id']}, {'$push': {'students': req['student_id']}})
     students.update_one({'_id': req['student_id']}, {'$set': {'room_id': str(room['_id'])}})
     room_requests.update_one({'_id': req['_id']}, {'$set': {'status': 'approved'}})
     flash('Room request approved and assigned')
     return redirect(url_for('warden_dashboard'))
+
 
 @app.route('/warden/reject_request/<rid>')
 @login_required('warden')
@@ -240,15 +283,48 @@ def reject_request(rid):
     flash('Request rejected')
     return redirect(url_for('warden_dashboard'))
 
-@app.route('/warden/room_edit/<room_id>', methods=['GET','POST'])
+
+@app.route('/warden/room/add', methods=['GET','POST'])
+@login_required('warden')
+def room_add():
+    if request.method == 'POST':
+        room_no = request.form.get('room_no','').strip()
+        room_type = request.form.get('room_type','').strip()
+        ac_type = request.form.get('ac_type','').strip()
+        try:
+            vacancies = int(request.form.get('vacancies', 0))
+        except ValueError:
+            vacancies = 0
+        if not room_no:
+            flash('Room number required')
+            return redirect(url_for('warden_dashboard'))
+        rooms.insert_one({
+            'room_no': room_no,
+            'room_type': room_type,
+            'ac_type': ac_type,
+            'vacancies': vacancies,
+            'students': []
+        })
+        flash('Room added')
+        return redirect(url_for('warden_dashboard'))
+    return render_template('room_edit.html')
+
+
+@app.route('/warden/room/edit/<room_id>', methods=['GET','POST'])
 @login_required('warden')
 def room_edit(room_id):
     r = rooms.find_one({'_id': ObjectId(room_id)})
+    if not r:
+        flash('Room not found')
+        return redirect(url_for('warden_dashboard'))
     if request.method == 'POST':
-        room_no = request.form['room_no']
-        room_type = request.form['room_type']
-        ac_type = request.form['ac_type']
-        vacancies = int(request.form['vacancies'])
+        room_no = request.form.get('room_no','').strip()
+        room_type = request.form.get('room_type','').strip()
+        ac_type = request.form.get('ac_type','').strip()
+        try:
+            vacancies = int(request.form.get('vacancies', r.get('vacancies',0)))
+        except ValueError:
+            vacancies = r.get('vacancies',0)
         students_list = r.get('students', [])
         if len(students_list) > vacancies:
             flash('Vacancies less than current students; remove students first')
@@ -263,19 +339,6 @@ def room_edit(room_id):
         return redirect(url_for('warden_dashboard'))
     return render_template('room_edit.html', room=r)
 
-@app.route('/warden/add_room', methods=['POST'])
-@login_required('warden')
-def add_room():
-    rooms.insert_one({
-        'room_no': request.form['room_no'],
-        'room_type': request.form['room_type'],
-        'ac_type': request.form['ac_type'],
-        'vacancies': int(request.form['vacancies']),
-        'students': []
-    })
-    flash('Room added')
-    return redirect(url_for('warden_dashboard'))
-
 # ---------------- Common ----------------
 @app.route('/logout')
 def logout():
@@ -284,4 +347,4 @@ def logout():
     return redirect(url_for('index'))
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000)
+    app.run(host="0.0.0.0", port=5000, debug=True)
