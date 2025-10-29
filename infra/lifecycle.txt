@@ -1,0 +1,13 @@
+lifecycle {
+    ignore_changes = [
+      vercel_authentication,            # ignore new authentication block
+      serverless_function_region,
+      team_id,
+      environment,                      # optional: helps prevent plan diffs
+      git_repository,
+    ]
+  }
+
+  vercel_authentication = {
+    deployment_type = "none"
+  }
