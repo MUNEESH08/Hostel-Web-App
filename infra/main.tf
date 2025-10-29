@@ -2,7 +2,7 @@ terraform {
   required_providers {
     vercel = {
       source  = "vercel/vercel"
-      version = "~> 1.0"
+      version = "~> 0.7.0"
     }
   }
 }
@@ -11,29 +11,19 @@ provider "vercel" {
   api_token = var.vercel_api_token
 }
 
-resource "vercel_project" "terra_web_app" {
-  name = "terra-web-app"
-
-  git_repository = {
-    type = "github"
-    repo = "Muneesh08/Terra-Web-App"
-    ref  = "main"
-  }
+resource "vercel_project" "flask_app" {
+  name = "flask-on-vercel"
 }
 
-resource "vercel_deployment" "terra_web_app_deploy" {
-  project_id = vercel_project.terra_web_app.id
+resource "vercel_deployment" "flask_deploy" {
+  project_id = vercel_project.flask_app.id
 
   files = {
-    "Dockerfile" = {
-      sha  = filemd5("${path.module}/../Dockerfile")
-      data = file("${path.module}/../Dockerfile")
-    }
+    "Dockerfile"       = file("./Dockerfile")
+    "app.py"           = file("./app.py")
+    "requirements.txt" = file("./requirements.txt")
   }
 
-  production = true
-}
-
-output "vercel_project_url" {
-  value = "https://${vercel_project.terra_web_app.name}.vercel.app"
+  path_prefix = "/"
+  production  = true
 }
