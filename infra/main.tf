@@ -14,7 +14,7 @@ provider "vercel" {
 # Create the Vercel project
 resource "vercel_project" "terra_web_app" {
   name      = "terra-web-app"
-  framework = "other"   # Use "other" for Docker-based apps
+   # Use "other" for Docker-based apps
 
   git_repository = {
     type = "github"
@@ -42,3 +42,4 @@ resource "vercel_deployment" "terra_web_app_deploy" {
 output "vercel_project_url" {
   value = "https://${vercel_project.terra_web_app.name}.vercel.app"
 }
+
